@@ -23,16 +23,17 @@ type Connectivity struct {
 
 // FmoInfo : FMO結果を格納する構造体
 type FmoInfo struct {
-	CPFVersion             string
-	ResidueName            map[int]string
-	FragmentNum            int
-	AtomNum                int
-	Atom                   []atominfo.AtomInfo
-	ConnectivityNum        int
-	ConnectivityInfo       []Connectivity
-	NuclearRepulsionEnergy [][]float64 // 核間反発エネルギー
-	HfElectronEnergy       [][]float64 // HF-IFIEの電子エネルギー項
-	HfElectroStaticEnergy  [][]float64 // HF-IFIEの静電エネルギー項
+	CPFVersion             string              // CPFのバージョン
+	ResidueName            map[int]string      // 残基名
+	FragmentNum            int                 // フラグメント数
+	AtomNum                int                 // 原子の総数
+	Atom                   []atominfo.AtomInfo // 原子ごとの情報
+	ConnectivityNum        int                 // 結合情報の数
+	ConnectivityInfo       []Connectivity      // 原子間の結合情報
+	ConnectivityMatrix     [][]bool            // フラグメント間の結合情報
+	NuclearRepulsionEnergy [][]float64         // 核間反発エネルギー
+	HfElectronEnergy       [][]float64         // HF-IFIEの電子エネルギー項
+	HfElectroStaticEnergy  [][]float64         // HF-IFIEの静電エネルギー項
 	Mp2Ifie                [][]float64
 	HfIfieBsse             [][]float64
 	Mp2IfieBsse            [][]float64
@@ -48,7 +49,7 @@ func scanErrPanic(scanner *bufio.Scanner, errorMessage string) {
 }
 
 // mallocFmoInfo : ConnectivityInfo&ResidueName以外のFmoInfo構造体のスライスを初期化しておく。
-func mallocFmoInfo(fmoInfo *FmoInfo) {
+func (fmoInfo *FmoInfo) mallocFmoInfo() {
 	if fmoInfo.FragmentNum < 1 || fmoInfo.AtomNum < 1 {
 		panic("[ERROR] Number of fragments or number of atoms are illegal.")
 	}
@@ -69,6 +70,20 @@ func mallocFmoInfo(fmoInfo *FmoInfo) {
 		fmoInfo.HfIfieBsse[i] = make([]float64, fmoInfo.FragmentNum)
 		fmoInfo.Mp2IfieBsse[i] = make([]float64, fmoInfo.FragmentNum)
 		fmoInfo.Ifie[i] = make([]float64, fmoInfo.FragmentNum)
+	}
+}
+
+func (fmoInfo *FmoInfo) createConnectivityMatrix() {
+	fmoInfo.ConnectivityMatrix = make([][]bool, fmoInfo.FragmentNum)
+	for i := 0; i < fmoInfo.FragmentNum; i++ {
+		fmoInfo.ConnectivityMatrix[i] = make([]bool, fmoInfo.FragmentNum)
+	}
+	for i := 0; i < fmoInfo.ConnectivityNum; i++ {
+		// 原子の結合情報をフラグメントごとの結合情報に変換
+		src := fmoInfo.Atom[fmoInfo.ConnectivityInfo[i].dest-1].FragmentNum
+		dest := fmoInfo.Atom[fmoInfo.ConnectivityInfo[i].src-1].FragmentNum
+		fmoInfo.ConnectivityMatrix[src-1][dest-1] = true
+		fmoInfo.ConnectivityMatrix[dest-1][src-1] = true
 	}
 }
 
@@ -105,6 +120,8 @@ func (fmoInfo *FmoInfo) LoadCPF(path string) bool {
 		scanErrPanic(scanner, "")
 	}
 
+	fmoInfo.createConnectivityMatrix()
+
 	// IFIE読み取り
 	for i := 1; i < fmoInfo.FragmentNum; i++ {
 		for j := 0; j < i; j++ {
@@ -128,15 +145,18 @@ func (fmoInfo *FmoInfo) LoadCPF(path string) bool {
 			fmoInfo.HfIfieBsse[j][i] = fmoInfo.HfIfieBsse[i][j]
 			fmoInfo.Mp2IfieBsse[j][i] = fmoInfo.Mp2IfieBsse[i][j]
 
-			// 隣り合っていたら0にするってやつを書く。
-			fmoInfo.Ifie[i][j] = fmoInfo.NuclearRepulsionEnergy[i][j] + fmoInfo.HfElectronEnergy[i][j] + fmoInfo.Mp2Ifie[i][j]
-			fmoInfo.Ifie[j][i] = fmoInfo.Ifie[i][j]
+			// 結合しているフラグメント間のIFIEは共有結合エネルギーになってしまうそうなので0にする
+			if !fmoInfo.ConnectivityMatrix[i][j] {
+				fmoInfo.Ifie[i][j] = fmoInfo.NuclearRepulsionEnergy[i][j] + fmoInfo.HfElectronEnergy[i][j] + fmoInfo.Mp2Ifie[i][j]
+				fmoInfo.Ifie[j][i] = fmoInfo.Ifie[i][j]
+			}
 		}
 	}
 
 	for i := 0; i < fmoInfo.FragmentNum; i++ {
 		for j := 0; j < fmoInfo.FragmentNum; j++ {
-			fmt.Printf("%14f", fmoInfo.Ifie[i][j]*627.5095)
+			fmt.Printf("%20.14f", fmoInfo.Ifie[i][j]*627.5095)
+			//fmt.Printf("%t ", fmoInfo.ConnectivityMatrix[i][j])
 		}
 		fmt.Println()
 	}
@@ -161,7 +181,7 @@ func getGeom(fmoInfo *FmoInfo, scanner *bufio.Scanner) {
 	fmoInfo.AtomNum, _ = strconv.Atoi(strs[0])
 	fmoInfo.FragmentNum, _ = strconv.Atoi(strs[1])
 
-	mallocFmoInfo(fmoInfo)
+	fmoInfo.mallocFmoInfo()
 
 	fmoInfo.ResidueName = make(map[int]string)
 
