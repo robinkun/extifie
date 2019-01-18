@@ -8,9 +8,8 @@ import (
 
 func main() {
 	filepath := "./testfiles/gly5_1.cpf"
-	var fmoResult extifie.FmoResult
+	var fmoResult extifie.FmoInfo
 	fmoResult.LoadCPF(filepath)
 
 	fmt.Println(filepath)
-	extifie.Test()
 }
