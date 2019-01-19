@@ -2,6 +2,7 @@ package extifie
 
 import (
 	"bufio"
+	"encoding/csv"
 	"fmt"
 	"os"
 	"strconv"
@@ -12,7 +13,14 @@ import (
 
 const (
 	// HartreeKcalPerMol : 1 hartree = 627.5095 kcal / mol
-	HartreeKcalPerMol = 627.5095
+	hartreeKcalPerMol = 627.5095
+)
+
+const (
+	// Hartree : 単位をHartreeにする
+	Hartree = iota
+	// KcalPerMol : 単位をKcal/molにする
+	KcalPerMol
 )
 
 // Connectivity : CPFの中に書いてある結合情報を保存するための構造体
@@ -26,6 +34,7 @@ type FmoInfo struct {
 	CPFVersion             string              // CPFのバージョン
 	ResidueName            map[int]string      // 残基名
 	FragmentNum            int                 // フラグメント数
+	ResidueInFragment      []map[int]struct{}  // フラグメントに含まれる残基の番号のリスト。キーを値として使う。
 	AtomNum                int                 // 原子の総数
 	Atom                   []atominfo.AtomInfo // 原子ごとの情報
 	ConnectivityNum        int                 // 結合情報の数
@@ -38,6 +47,7 @@ type FmoInfo struct {
 	HfIfieBsse             [][]float64
 	Mp2IfieBsse            [][]float64
 	Ifie                   [][]float64 // csvに出力するifie
+	unit                   int         // 出力する単位(Hartree or Kcal/mol)
 }
 
 // scanErrPanic : スキャナがエラーを吐いていたらプログラムを修正させる
@@ -54,6 +64,7 @@ func (fmoInfo *FmoInfo) mallocFmoInfo() {
 		panic("[ERROR] Number of fragments or number of atoms are illegal.")
 	}
 	fmoInfo.Atom = make([]atominfo.AtomInfo, fmoInfo.AtomNum)
+	fmoInfo.ResidueInFragment = make([]map[int]struct{}, fmoInfo.FragmentNum)
 
 	fmoInfo.NuclearRepulsionEnergy = make([][]float64, fmoInfo.FragmentNum)
 	fmoInfo.HfElectronEnergy = make([][]float64, fmoInfo.FragmentNum)
@@ -70,7 +81,9 @@ func (fmoInfo *FmoInfo) mallocFmoInfo() {
 		fmoInfo.HfIfieBsse[i] = make([]float64, fmoInfo.FragmentNum)
 		fmoInfo.Mp2IfieBsse[i] = make([]float64, fmoInfo.FragmentNum)
 		fmoInfo.Ifie[i] = make([]float64, fmoInfo.FragmentNum)
+		fmoInfo.ResidueInFragment[i] = make(map[int]struct{})
 	}
+	fmoInfo.ResidueName = make(map[int]string)
 }
 
 func (fmoInfo *FmoInfo) createConnectivityMatrix() {
@@ -87,8 +100,68 @@ func (fmoInfo *FmoInfo) createConnectivityMatrix() {
 	}
 }
 
+// HartreeToKcalPerMol : 単位をHartreeからKcal/molに変換
+func HartreeToKcalPerMol(val float64) float64 {
+	return val * hartreeKcalPerMol
+}
+
+// SetUnitHartree : FmoInfoが出力するときの単位をHartreeに変更する。
+func (fmoInfo *FmoInfo) SetUnitHartree() {
+	fmoInfo.unit = Hartree
+}
+
+// SetUnitKcalPerMol : FmoInfoが出力するときの単位をKcalPerMolに変更する。
+func (fmoInfo *FmoInfo) SetUnitKcalPerMol() {
+	fmoInfo.unit = KcalPerMol
+}
+
+// GenerateCSV : IFIEをCSVに出力する
+func (fmoInfo *FmoInfo) GenerateCSV(path string) {
+	fp, err := os.Create(path)
+	if err != nil {
+		panic(err)
+	}
+
+	// csvに出力する文字列を格納する2次元スライス
+	csvdata := make([][]string, fmoInfo.FragmentNum+1)
+	for i := 0; i < fmoInfo.FragmentNum+1; i++ {
+		csvdata[i] = make([]string, fmoInfo.FragmentNum+1)
+	}
+	writer := csv.NewWriter(fp)
+
+	// csv1行目
+	i := 1
+	for _, fragment := range fmoInfo.ResidueInFragment {
+		for residueNum := range fragment {
+			csvdata[0][i] += fmoInfo.ResidueName[residueNum] + strconv.Itoa(residueNum) + " "
+		}
+		i++
+	}
+
+	// csv2行目以降
+	i = 0
+	writer.Write(csvdata[0]) // csv1行目出力
+	for _, fragment := range fmoInfo.ResidueInFragment {
+		for residueNum := range fragment {
+			csvdata[i+1][0] += fmoInfo.ResidueName[residueNum] + strconv.Itoa(residueNum) + " "
+		}
+		for j := 0; j < fmoInfo.FragmentNum; j++ {
+			switch fmoInfo.unit {
+			case Hartree:
+				csvdata[i+1][j+1] = strconv.FormatFloat(fmoInfo.Ifie[i][j], 'f', 15, 64)
+			case KcalPerMol:
+				csvdata[i+1][j+1] = strconv.FormatFloat(HartreeToKcalPerMol(fmoInfo.Ifie[i][j]), 'f', 15, 64)
+			}
+		}
+		i++
+		writer.Write(csvdata[i])
+		writer.Flush()
+	}
+	fmt.Println("Wrote Successful.")
+}
+
 // LoadCPF : CPFからデータを読み込んでFmoInfo型に格納
-func (fmoInfo *FmoInfo) LoadCPF(path string) bool {
+func (fmoInfo *FmoInfo) LoadCPF(path string) {
 	fp, err := os.Open(path)
 
 	if err != nil {
@@ -153,15 +226,17 @@ func (fmoInfo *FmoInfo) LoadCPF(path string) bool {
 		}
 	}
 
-	for i := 0; i < fmoInfo.FragmentNum; i++ {
-		for j := 0; j < fmoInfo.FragmentNum; j++ {
-			fmt.Printf("%20.14f", fmoInfo.Ifie[i][j]*627.5095)
-			//fmt.Printf("%t ", fmoInfo.ConnectivityMatrix[i][j])
+	/*
+		for i := 0; i < fmoInfo.FragmentNum; i++ {
+			for j := 0; j < fmoInfo.FragmentNum; j++ {
+				fmt.Printf("%20.14f", fmoInfo.Ifie[i][j]*627.5095)
+				//fmt.Printf("%t ", fmoInfo.ConnectivityMatrix[i][j])
+			}
+			fmt.Println()
 		}
-		fmt.Println()
-	}
-	fmt.Println("Successful Loaded.")
-	return true
+	*/
+
+	fmt.Println("Loaded successful.")
 }
 
 func getGeom(fmoInfo *FmoInfo, scanner *bufio.Scanner) {
@@ -183,8 +258,6 @@ func getGeom(fmoInfo *FmoInfo, scanner *bufio.Scanner) {
 
 	fmoInfo.mallocFmoInfo()
 
-	fmoInfo.ResidueName = make(map[int]string)
-
 	// 原子情報読み取り
 	//residueCnt := 0
 	for i := 0; i < fmoInfo.AtomNum; i++ {
@@ -201,7 +274,8 @@ func getGeom(fmoInfo *FmoInfo, scanner *bufio.Scanner) {
 		fmoInfo.Atom[i].ResidueNum, _ = strconv.Atoi(strs[4])
 		fmoInfo.ResidueName[fmoInfo.Atom[i].ResidueNum] = strs[3]
 		fmoInfo.Atom[i].FragmentNum, _ = strconv.Atoi(strs[5])
-		fmoInfo.Atom[i].PrintAtomInfo()
+		//fmoInfo.Atom[i].PrintAtomInfo()
+		fmoInfo.ResidueInFragment[fmoInfo.Atom[i].FragmentNum-1][fmoInfo.Atom[i].ResidueNum] = struct{}{}
 	}
 
 	// 電子数読み飛ばし
@@ -220,7 +294,6 @@ func getGeom(fmoInfo *FmoInfo, scanner *bufio.Scanner) {
 			fmoInfo.ConnectivityNum += tmp
 		}
 	}
-	//fmt.Println(fmoInfo.ConnectivityNum)
 
 	// 結合情報を読み取り、フラグメント間の結合情報に変換
 	fmoInfo.ConnectivityInfo = make([]Connectivity, fmoInfo.ConnectivityNum)
@@ -233,15 +306,5 @@ func getGeom(fmoInfo *FmoInfo, scanner *bufio.Scanner) {
 		}
 		fmoInfo.ConnectivityInfo[i].src, _ = strconv.Atoi(strs[0])
 		fmoInfo.ConnectivityInfo[i].dest, _ = strconv.Atoi(strs[1])
-		//fmoInfo.ConnectivityInfo[i].src = fmoInfo.Atom[src-1].FragmentNum
-		//fmoInfo.ConnectivityInfo[i].dest = fmoInfo.Atom[dest-1].FragmentNum
-		fmt.Printf("%d, %d\n", fmoInfo.ConnectivityInfo[i].src, fmoInfo.ConnectivityInfo[i].dest)
 	}
-	/*
-		// テストコード
-		fmt.Println(fragmentCnt)
-		for i := 0; i < fmoInfo.FragmentNum; i++ {
-			fmt.Println(fmoInfo.ResidueName[i])
-		}
-	*/
 }

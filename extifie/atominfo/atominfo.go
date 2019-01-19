@@ -17,7 +17,3 @@ type AtomInfo struct {
 func (atom *AtomInfo) PrintAtomInfo() {
 	fmt.Printf("%5d %3s %3s %4d %4d\n", atom.AtomNum, atom.AtomName, atom.AtomType, atom.ResidueNum, atom.FragmentNum)
 }
-
-func Test() int {
-	return 0
-}
